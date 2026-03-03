@@ -54,10 +54,12 @@ The backend stores user accounts, course definitions, group enrollments, and a l
 ├── models/
 │   ├── User.js             # username, email, password, role
 │   ├── Course.js           # courseCode, name, uri, project
+│   ├── Group.js            # name, slug, course
 │   ├── Enrollment.js       # user + course + group + projectStatus
 │   └── Statement.js        # xAPI statement local copy + LRS sync state
 ├── routes/
 │   ├── userRoutes.js       # Auth and user management
+│   ├── courseRoutes.js     # Course and group management
 │   ├── xapiRoutes.js       # Statement ingestion, retrieval, admin stats
 │   └── enrollmentRoutes.js # Enrollment CRUD
 ├── scripts/
@@ -217,12 +219,29 @@ router.get("/route", auth.protect, auth.adminOnly, handler);
 
 ---
 
+### Courses - `/api/courses`
+
+| Method | Path                           | Auth    | Description                     |
+| ------ | ------------------------------ | ------- | ------------------------------- |
+| GET    | `/`                            | Student | List all courses                |
+| GET    | `/:courseCode/groups`          | Student | List all groups for a course    |
+| POST   | `/:courseCode/groups`          | Admin   | Create a new group for a course |
+| DELETE | `/:courseCode/groups/:groupId` | Admin   | Delete a group from a course    |
+
+**POST `/:courseCode/groups` body:**
+
+```json
+{ "name": "Group D", "slug": "group-d" }
+```
+
+---
+
 ### xAPI - `/api/xapi`
 
 | Method | Path                | Auth    | Description                                           |
 | ------ | ------------------- | ------- | ----------------------------------------------------- |
 | POST   | `/`                 | Student | Submit an xAPI statement                              |
-| GET    | `/statements`       | Student | Fetch statements scoped to the user's enrolled groups |
+| GET    | `/statements`       | Student | Fetch statements scoped to the current user           |
 | GET    | `/admin/statements` | Admin   | Fetch all statements (unscoped) with optional filters |
 | GET    | `/admin/stats`      | Admin   | Aggregated platform statistics                        |
 
@@ -245,8 +264,9 @@ The verb URI is inspected to resolve the course automatically. A URI containing 
 | Parameter | Description                                         |
 | --------- | --------------------------------------------------- |
 | `course`  | Filter by course code, e.g. `COMP3609`              |
-| `group`   | Filter by group, e.g. `group-a`                     |
+| `group`   | Filter by group ObjectId string                     |
 | `verb`    | Case-insensitive partial match on verb display name |
+| `stage`   | Filter by stage value                               |
 | `userId`  | Filter by user ObjectId                             |
 | `limit`   | Maximum records to return (default 100, max 500)    |
 
@@ -256,8 +276,9 @@ The verb URI is inspected to resolve the course automatically. A URI containing 
 {
   "totals": { "users": 0, "statements": 0, "enrollments": 0, "lrsSynced": 0 },
   "statementsByCourse": [{ "courseCode": "COMP3609", "count": 0 }],
-  "statementsByGroup": [{ "_id": "group-a", "count": 0 }],
+  "statementsByGroup": [{ "name": "Group A", "slug": "group-a", "count": 0 }],
   "statementsByVerb": [{ "_id": "Implemented", "count": 0 }],
+  "statementsByStage": [{ "_id": "stage-value", "count": 0 }],
   "recentStatements": [{ "_id": "2025-01-01", "count": 0 }]
 }
 ```
@@ -279,21 +300,23 @@ The verb URI is inspected to resolve the course automatically. A URI containing 
 **POST `/api/enrollments/join` body:**
 
 ```json
-{ "courseCode": "comp3609", "group": "group-b" }
+{ "courseCode": "comp3609", "groupId": "<ObjectId>" }
 ```
-
-Valid groups: `group-a`, `group-b`, `group-c`.
 
 **POST `/api/enrollments` (admin) body:**
 
 ```json
-{ "email": "student@example.com", "courseCode": "COMP3610", "group": "group-a" }
+{
+  "email": "student@example.com",
+  "courseCode": "COMP3610",
+  "groupId": "<ObjectId>"
+}
 ```
 
 **PATCH `/api/enrollments/:id` body:**
 
 ```json
-{ "group": "group-c", "projectStatus": "completed" }
+{ "groupId": "<ObjectId>", "projectStatus": "completed" }
 ```
 
 Valid project statuses: `not-started`, `in-progress`, `completed`. Setting `completed` automatically records `projectCompletedAt`.
@@ -322,13 +345,23 @@ Valid project statuses: `not-started`, `in-progress`, `completed`. Setting `comp
 | `project.name`        | String | Project title                                |
 | `project.description` | String | Project summary                              |
 
+### Group
+
+| Field    | Type     | Notes                               |
+| -------- | -------- | ----------------------------------- |
+| `name`   | String   | Display name, e.g. `Group A`        |
+| `slug`   | String   | URL-safe identifier, e.g. `group-a` |
+| `course` | ObjectId | Ref: Course                         |
+
+Unique index on `{ course, slug }`.
+
 ### Enrollment
 
 | Field                | Type     | Notes                                     |
 | -------------------- | -------- | ----------------------------------------- |
 | `user`               | ObjectId | Ref: User                                 |
 | `course`             | ObjectId | Ref: Course                               |
-| `group`              | String   | `group-a`, `group-b`, or `group-c`        |
+| `group`              | ObjectId | Ref: Group                                |
 | `projectStatus`      | String   | `not-started`, `in-progress`, `completed` |
 | `projectStartedAt`   | Date     | Set on first join                         |
 | `projectCompletedAt` | Date     | Set when status is marked completed       |
@@ -337,17 +370,19 @@ Unique index on `{ user, course }` - one enrollment per student per course.
 
 ### Statement
 
-| Field            | Type     | Notes                                       |
-| ---------------- | -------- | ------------------------------------------- |
-| `user`           | ObjectId | Ref: User                                   |
-| `course`         | ObjectId | Ref: Course, nullable                       |
-| `group`          | String   | Resolved from enrollment at submission time |
-| `verb.uri`       | String   | Full verb URI                               |
-| `verb.display`   | String   | Human-readable verb label                   |
-| `description`    | String   | Optional context, max 500 characters        |
-| `rawStatement`   | Mixed    | Full xAPI statement JSON                    |
-| `lrsSynced`      | Boolean  | True once LRS confirms receipt              |
-| `lrsStatementId` | String   | ID returned by the LRS                      |
+| Field            | Type     | Notes                                                   |
+| ---------------- | -------- | ------------------------------------------------------- |
+| `user`           | ObjectId | Ref: User                                               |
+| `course`         | ObjectId | Ref: Course, nullable                                   |
+| `group`          | ObjectId | Ref: Group, resolved from enrollment at submission time |
+| `verb.uri`       | String   | Full verb URI                                           |
+| `verb.display`   | String   | Human-readable verb label                               |
+| `stage`          | String   | Stage of the activity                                   |
+| `scenario`       | String   | Scenario context for the statement                      |
+| `description`    | String   | Optional context, max 500 characters                    |
+| `rawStatement`   | Mixed    | Full xAPI statement JSON                                |
+| `lrsSynced`      | Boolean  | True once LRS confirms receipt                          |
+| `lrsStatementId` | String   | ID returned by the LRS                                  |
 
 Indexes on `{ user, createdAt }`, `{ group, createdAt }`, `{ course, createdAt }`.
 
