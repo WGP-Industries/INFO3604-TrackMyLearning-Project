@@ -9,10 +9,7 @@ import xapiRouter from './routes/xapiRoutes.js';
 import enrollmentRouter from './routes/enrollmentRoutes.js';
 import courseRouter from './routes/courseRoutes.js';
 
-
-
-//console.log('LRS_ENDPOINT:', process.env.LRS_ENDPOINT);
-
+// Ensure required environment variables
 const REQUIRED_ENV = ['MONGODB_URI', 'JWT_SECRET', 'LRS_ENDPOINT', 'LRS_USERNAME', 'LRS_PASSWORD'];
 const missing = REQUIRED_ENV.filter((k) => !process.env[k]);
 if (missing.length) {
@@ -23,23 +20,46 @@ if (missing.length) {
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors({
-  origin: process.env.CORS_ORIGIN?.split(',') || 'http://localhost:5173',
-  credentials: true,
-}));
+//  CORS Setup 
+const allowedOrigins = process.env.CORS_ORIGIN?.split(',') || [];
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true); // allow Postman / server-side requests
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      return callback(new Error('Not allowed by CORS'));
+    },
+    credentials: true,
+  })
+);
+
+//  Middleware 
 app.use(express.json());
+
+//  Routes 
+app.get('/', (_, res) => {
+  res.json({
+    message: 'Welcome to the Learning App Backend!',
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+  });
+});
 
 app.use('/api/user', userRouter);
 app.use('/api/xapi', xapiRouter);
 app.use('/api/enrollments', enrollmentRouter);
-app.use("/api/courses", courseRouter);
+app.use('/api/courses', courseRouter);
 
-app.get('/api/health', (_, res) => res.json({
-  status: 'ok',
-  timestamp: new Date().toISOString(),
-  env: process.env.NODE_ENV || 'development',
-}));
+app.get('/api/health', (_, res) =>
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    env: process.env.NODE_ENV || 'development',
+  })
+);
 
+//  404 & Error Handling 
 app.use((_, res) => res.status(404).json({ message: 'Route not found' }));
 
 app.use((err, _req, res, _next) => {
@@ -47,9 +67,11 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ message: err.message || 'Internal server error' });
 });
 
+//  Start Server 
 connectDB().then(() => {
   app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`CORS allowed origins: ${allowedOrigins.join(', ')}`);
   });
 });
