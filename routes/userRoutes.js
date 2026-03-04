@@ -1,9 +1,7 @@
 import { Router } from 'express';
 import jwt from 'jsonwebtoken';
-import fetch from 'node-fetch';
 import User from '../models/User.js';
 import auth from '../middleware/auth.js';
-import { lrsHeaders } from '../config/lrs.js';
 
 const userRouter = Router();
 
@@ -51,36 +49,6 @@ userRouter.post('/login', async (req, res) => {
         }
 
         const token = signToken(user._id);
-        const homePage = req.headers.origin || 'http://localhost:5173';
-
-        // Fire and forget login tracking statement to LRS
-        fetch(process.env.LRS_ENDPOINT, {
-            method: 'POST',
-            headers: lrsHeaders(),
-            body: JSON.stringify({
-                actor: {
-                    objectType: 'Agent',
-                    name: user.username,
-                    account: { homePage, name: user.email },
-                },
-                verb: {
-                    id: 'http://adlnet.gov/expapi/verbs/logged-in',
-                    display: { 'en-US': 'logged in' },
-                },
-                object: {
-                    objectType: 'Activity',
-                    id: 'https://quiz.com/activity/login',
-                    definition: {
-                        type: 'https://quiz.com/activity-types/authentication',
-                        name: { 'en-US': 'Login' },
-                        description: { 'en-US': 'User authenticated' },
-                    },
-                },
-                timestamp: new Date().toISOString(),
-                version: '1.0.3',
-            }),
-        }).catch((e) => console.error('LRS login track failed:', e.message));
-
         res.json({ token, user });
     } catch (err) {
         console.error('Login error:', err);

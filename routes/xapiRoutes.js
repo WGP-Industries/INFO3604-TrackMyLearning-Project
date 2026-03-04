@@ -7,6 +7,8 @@ import Course from '../models/Course.js';
 import Enrollment from '../models/Enrollment.js';
 import User from '../models/User.js';
 
+const BASE_URI = 'https://student-analytics-app.vercel.app/xapi';
+
 const xapiRouter = Router();
 
 const populateStatement = (query) =>
@@ -26,8 +28,8 @@ xapiRouter.post('/', auth.protect, async (req, res) => {
     // Resolve course from verb URI
     let course = null;
     const verbUri = statement.verb?.id || '';
-    if (verbUri.includes('example.edu')) {
-        const courseCode = verbUri.split('example.edu/')[1]?.split('/')[0]?.toUpperCase();
+    if (verbUri.includes('student-analytics-app.vercel.app')) {
+        const courseCode = verbUri.split('/xapi/verbs/')[0]?.split('/').pop()?.toUpperCase();
         if (courseCode) course = await Course.findOne({ courseCode });
     }
 
@@ -42,8 +44,8 @@ xapiRouter.post('/', auth.protect, async (req, res) => {
     }
 
     const extensions = statement.context?.extensions ?? {};
-    const stage = extensions['https://example.edu/xapi/extensions/pedagogical-stage'] ?? additionalData?.stage ?? null;
-    const scenario = extensions['https://example.edu/xapi/extensions/learner-scenario'] ?? additionalData?.scenario ?? null;
+    const stage = extensions[`${BASE_URI}/extensions/pedagogical-stage`] ?? additionalData?.stage ?? null;
+    const scenario = extensions[`${BASE_URI}/extensions/learner-scenario`] ?? additionalData?.scenario ?? null;
 
     const localStatement = await Statement.create({
         user: req.user._id,
@@ -96,7 +98,7 @@ xapiRouter.post('/', auth.protect, async (req, res) => {
 });
 
 // GET /api/xapi/statements
-// Scoped to the student's own enrollments (course + group pairs)
+// Scoped to the current user's own statements
 xapiRouter.get('/statements', auth.protect, async (req, res) => {
     try {
         if (req.query.source === 'lrs') {
@@ -112,19 +114,8 @@ xapiRouter.get('/statements', auth.protect, async (req, res) => {
 
         const limit = Math.min(parseInt(req.query.limit) || 50, 200);
 
-        const enrollments = await Enrollment.find({ user: req.user._id });
-
-        const groupCourseFilters = enrollments.map((e) => ({
-            course: e.course,
-            group: e.group,
-        }));
-
-        const query = groupCourseFilters.length > 0
-            ? { $or: groupCourseFilters }
-            : { user: req.user._id };
-
         const statements = await populateStatement(
-            Statement.find(query).sort({ createdAt: -1 }).limit(limit)
+            Statement.find({ user: req.user._id }).sort({ createdAt: -1 }).limit(limit)
         ).lean();
 
         res.json({ statements, total: statements.length });
@@ -144,7 +135,7 @@ xapiRouter.get('/admin/statements', auth.protect, auth.adminOnly, async (req, re
             const course = await Course.findOne({ courseCode: req.query.course.toUpperCase() });
             if (course) filter.course = course._id;
         }
-        if (req.query.group) filter.group = req.query.group; // expects ObjectId string
+        if (req.query.group) filter.group = req.query.group;
         if (req.query.stage) filter.stage = req.query.stage;
         if (req.query.scenario) filter.scenario = req.query.scenario;
         if (req.query.userId) filter.user = req.query.userId;
@@ -190,7 +181,6 @@ xapiRouter.get('/admin/stats', auth.protect, auth.adminOnly, async (req, res) =>
                 { $project: { courseCode: '$course.courseCode', name: '$course.name', count: 1 } },
             ]),
 
-            // Join groups to get name + slug in the aggregation
             Statement.aggregate([
                 { $match: { group: { $ne: null } } },
                 { $group: { _id: '$group', count: { $sum: 1 } } },
